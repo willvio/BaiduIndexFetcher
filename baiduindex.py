@@ -7,14 +7,15 @@
 #
 # 登陆百度地址：https://passport.baidu.com/v2/?login&tpl=mn&u=http%3A%2F%2Fwww.baidu.com%2F
 # 百度指数地址：http://index.baidu.com
-
+import re
 import time
 import os
 import glob
 import random
-import numpy as np
 import cv2
 import urllib.parse as urlparse
+import numpy as np
+import xlwt
 from urllib.parse import urlencode
 from datetime import datetime
 from selenium import webdriver
@@ -26,6 +27,7 @@ from image_slicer import ImageSlicer
 class BaiduIndexFetcher:
 
     DATE_FORMAT = '%Y%m%d'
+    BAIDU_DATE_FORMAT = '%Y-%m-%d'
     BAIDU_INDEX_URL = 'http://index.baidu.com/?tpl=trend&type=0'
     RESOURCE_DIR = 'resource/'
     DEFAULT_WORKING_DIR = 'baidu/'
@@ -37,6 +39,7 @@ class BaiduIndexFetcher:
         self.working_dir = working_dir
         self.browser = BaiduIndexFetcher.open_browser()
         self.image_slicer = ImageSlicer(working_dir)
+        self.keyword = None
 
     # 打开浏览器
     @staticmethod
@@ -136,7 +139,7 @@ class BaiduIndexFetcher:
             end_date = datetime.strptime(dates[1], BaiduIndexFetcher.DATE_FORMAT)
             if start_date > end_date:
                 raise AttributeError
-            return '|'.join(dates), (end_date - start_date).days
+            return '|'.join(dates), (end_date - start_date).days + 1
         except Exception as ex:
             print('输入错误：' + ex)
             return None
@@ -152,14 +155,19 @@ class BaiduIndexFetcher:
     def get_index(self):
         # 每个字大约占横坐标12.5这样
         # 按照字节可自行更改切割横坐标的大小rangle
-        keyword = input("请输入查询关键字，按Q退出：")
-        if keyword == "q" or keyword == "Q":
+        self.keyword = input("请输入查询关键字，按Q退出：")
+        if self.keyword == "q" or self.keyword == "Q":
             self.browser.close()
             for tmp_file in glob.glob(self.working_dir + '*.png'):
                 os.remove(tmp_file)
             return None
 
         sel = int(input("查询7天请按0，30天请按1，自定义请按2："))
+        while 1:
+            if sel == 0 or sel ==1 or sel == 2:
+                break
+            else:
+                sel = int(input("非法输入！查询7天请按0,30天请按1，自定义请按2："))
         days = 7
         date_type = 12
         if sel == 0:
@@ -169,17 +177,22 @@ class BaiduIndexFetcher:
             days = 30
             date_type = 13
         elif sel == 2:
-            date_response = None
-            while date_response is None:
-                sel = str(input("请输入起止日期，格式按YYMMDD，空格分隔："))
-                date_response = BaiduIndexFetcher.__get_date_type(sel)
+            sel = str(input("请输入起止日期，格式按YYYYMMDD，空格分隔起始和终止日期："))
+            pattern = re.compile(r'^20[012]\d(0[1-9]|1[0-2])\d\d\s20[012]\d(0[1-9]|1[0-2])\d\d$')
+            while 1:
+                match = pattern.match(sel)
+                if match:
+                    break
+                else:
+                    sel = str(input("非法输入！请输入起止日期，格式按YYYYMMDD，空格分隔起始和终止日期："))
+            date_response = BaiduIndexFetcher.__get_date_type(sel)
             date_type = date_response[0]
             days = date_response[1]
 
         city_code = input("请输入城市编号，按回车跳过：")
 
         index_url = self.__add_param_to_url(self.BAIDU_INDEX_URL, {'time': date_type,
-                                                                   'word': keyword,
+                                                                   'word': self.keyword,
                                                                    'area': city_code})
 
         # 这里开始进入百度指数
@@ -204,7 +217,11 @@ class BaiduIndexFetcher:
         # <div id="trend" class="R_paper" style="height:480px;_background-color:#fff;"><svg height="460" version="1.1" width="954" xmlns="http://www.w3.org/2000/svg" style="overflow: hidden; position: relative; left: -0.5px;">
         # <rect x="20" y="130" width="914" height="207.66666666666666" r="0" rx="0" ry="0" fill="#ff0000" stroke="none" opacity="0" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0); opacity: 0;"></rect>
         # xoyelement = browser.find_element_by_xpath('//rect[@stroke="none"]')
-        xoyelement = self.browser.find_elements_by_css_selector("#trend rect")[2]
+        try:
+            xoyelement = self.browser.find_elements_by_css_selector("#trend rect")[2]
+        except IndexError:
+            print('此关键词未被收录,本次查询终止...')
+            return False
         # 获得坐标长宽
         # x = xoyelement.location['x']
         # y = xoyelement.location['y']
@@ -213,13 +230,13 @@ class BaiduIndexFetcher:
         # 常用js:http://www.cnblogs.com/hjhsysu/p/5735339.html
         # 搜索词：selenium JavaScript模拟鼠标悬浮
         x_0 = 1
-        y_0 = float(height / 2)
+        y_0 = 1
 
         # 储存数字的数组
         index = []
         # webdriver.ActionChains(driver).move_to_element().click().perform()
         # 只有移动位置xoyelement[2]是准确的
-        step = (float(width) - 2) / (days-1)
+        step = (float(width) - 1) / (days-1)
         for i in range(days):
             try:
                 # 坐标偏移量???
@@ -263,7 +280,9 @@ class BaiduIndexFetcher:
 
             except IndexError as err:
                 print(i, err)
-        return index
+        # return self.__sum_index_by_month(index)
+        return index, self.__sum_index_by_month(index)
+
 
     def __save_digit(self, digit, digit_image):
         directory = self.working_dir + str(digit)
@@ -301,12 +320,58 @@ class BaiduIndexFetcher:
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
         return int(min_loc[0] / 8)
 
+    def save_data(self, data_day, date_month):
+        name = './data/'+self.keyword+'.xlsx'
+        # f = open(name, 'w')
+        # try:
+        #     for i in data:
+        #         item = str(i[0])+':'+str(i[1])+'\n'
+        #         f.write(item)
+        # finally:
+        #     f.close()
+        book = xlwt.Workbook(encoding='utf-8', style_compression=0)
+        sheet = book.add_sheet(self.keyword, cell_overwrite_ok=True)
+        sheet.write(0, 0, '百度指数')
+        sheet.write(0, 1, self.keyword)
+        for i in range(len(data_day)):
+            sheet.write(i+1, 1, data_day[i][1])
+            sheet.write(i+1, 0, data_day[i][0])
+        line = 1
+        for ele in date_month:
+            sheet.write(line, 2, ele[0].strftime(BaiduIndexFetcher.BAIDU_DATE_FORMAT))
+            sheet.write(line, 3, ele[1])
+            line += 1
+        book.save(name)
+
+    @staticmethod
+    def __sum_index_by_month(index_data):
+        monthly_sum = 0
+        pre_date = None
+        for data in index_data:
+            cur_date = datetime.strptime(data[0][:10], BaiduIndexFetcher.BAIDU_DATE_FORMAT)
+            if pre_date is None:
+                pre_date = cur_date
+            if cur_date.month != pre_date.month:
+                yield pre_date, monthly_sum
+                pre_date = cur_date
+                monthly_sum = data[1]
+            else:
+                monthly_sum += data[1]
+        yield pre_date, monthly_sum
+
 if __name__ == "__main__":
 
     baidu_index_fetcher = BaiduIndexFetcher()
     while 1:
-        index = baidu_index_fetcher.get_index()
-        if index is None:
+        [index_day, index_month] = baidu_index_fetcher.get_index()
+        if index_day is False:  # 关键词未收录
+            continue
+        if index_day is None:
             break
-        for ele in index:
+        for ele in index_day:
             print(ele)
+        is_write = input('如需要保存数据则输入1, 数据文件将以关键字命名保存到项目目录下的data文件夹下, 否则输入0： ')
+        if is_write:
+            baidu_index_fetcher.save_data(index_day, index_month)
+
+
